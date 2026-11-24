@@ -5,7 +5,7 @@ set -euo pipefail
 VM_NAME="Windows2000"
 VM_DIR="$HOME/VM/$VM_NAME"
 
-QEMU="qemu-system-i386"
+QEMU="/usr/bin/qemu-system-x86_64"
 VM_DISK="$VM_DIR/windows2000.qcow2"
 
 RAM="512"
