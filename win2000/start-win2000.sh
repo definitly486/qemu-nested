@@ -39,6 +39,6 @@ exec qemu-system-i386 \
     -boot order=c \
     -vga cirrus \
     -display none \
-    -vnc 127.0.0.1:1 \
+    -vnc 0.0.0.0:1 \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0
