@@ -63,7 +63,7 @@ exec qemu-system-i386 \
     -name "$VM_NAME" \
     -machine pc,accel=kvm \
     -enable-kvm \
-    -cpu host \
+    -cpu pentium3 \
     -m "$RAM" \
     -smp 1 \
     -drive "file=$DISK,format=qcow2,if=ide,index=0" \
