@@ -6,7 +6,34 @@ set -euo pipefail
 
 VM_NAME="Windows2000"
 VM_DIR="$HOME/VM/$VM_NAME"
-ISO="$HOME/Windows 2000.ver.SP3.Russian.iso"
+# Поиск ISO-образов Windows 2000 в домашнем каталоге
+mapfile -t ISO_LIST < <(
+    find "$HOME" -maxdepth 3 -type f -iname '*.iso' \
+        | sort
+)
+
+if [ ${#ISO_LIST[@]} -eq 0 ]; then
+    echo "ISO-файлы не найдены в $HOME"
+    exit 1
+fi
+
+echo "Доступные ISO-образы:"
+for i in "${!ISO_LIST[@]}"; do
+    printf "%d) %s\n" "$((i + 1))" "${ISO_LIST[$i]}"
+done
+
+echo
+read -rp "Выбери ISO (номер): " ISO_CHOICE
+
+if ! [[ "$ISO_CHOICE" =~ ^[0-9]+$ ]] ||
+   (( ISO_CHOICE < 1 || ISO_CHOICE > ${#ISO_LIST[@]} )); then
+    echo "Неверный выбор"
+    exit 1
+fi
+
+ISO="${ISO_LIST[$((ISO_CHOICE - 1))]}"
+
+echo "Выбран образ: $ISO"
 DISK="$VM_DIR/windows2000.qcow2"
 
 RAM="512"
