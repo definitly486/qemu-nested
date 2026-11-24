@@ -58,8 +58,9 @@ esac
 
 exec qemu-system-i386 \
     -name "$VM_NAME" \
-    -machine pc \
-    -cpu pentium3 \
+    -machine pc,accel=kvm \
+    -enable-kvm \
+    -cpu host \
     -m "$RAM" \
     -smp 1 \
     -drive file="$DISK",format=qcow2,if=ide,index=0 \
@@ -67,5 +68,8 @@ exec qemu-system-i386 \
     $BOOT \
     $EXTRA \
     -vga cirrus \
+    -display none \
+    -vnc 127.0.0.1:1 \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0
+
