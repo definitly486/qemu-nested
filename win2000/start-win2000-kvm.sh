@@ -6,9 +6,9 @@ VM_NAME="Windows2000"
 VM_DIR="$HOME/VM/$VM_NAME"
 
 QEMU="/usr/bin/qemu-system-x86_64"
-VM_DISK="$VM_DIR/windows2000.qcow2"
+VM_DISK="$VM_DIR/windows2000.raw"
 
-RAM="512"
+RAM="1024"
 CPUS="1"
 
 PIDFILE="$VM_DIR/qemu.pid"
