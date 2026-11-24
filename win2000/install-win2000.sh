@@ -35,26 +35,29 @@ fi
 
 MODE="${1:-install}"
 
+
 case "$MODE" in
     install)
         echo "Запуск установки Windows 2000 SP3..."
-        BOOT="-boot order=d,menu=on"
-        EXTRA="-win2k-hack"
-        CDROM="-drive file=$ISO,media=cdrom,readonly=on"
+        BOOT=(-boot order=d,menu=on)
+        EXTRA=(-win2k-hack)
+        CDROM=(-drive "file=$ISO,media=cdrom,readonly=on")
         ;;
     start)
         echo "Запуск установленной Windows 2000..."
-        BOOT="-boot order=c"
-        EXTRA=""
-        CDROM=""
+        BOOT=(-boot order=c)
+        EXTRA=()
+        CDROM=()
         ;;
     *)
         echo "Использование:"
-        echo "  $0 install  - установка Windows 2000"
-        echo "  $0 start    - запуск установленной системы"
+        echo "  $0 install"
+        echo "  $0 start"
         exit 1
         ;;
 esac
+
+
 
 exec qemu-system-i386 \
     -name "$VM_NAME" \
@@ -63,13 +66,14 @@ exec qemu-system-i386 \
     -cpu host \
     -m "$RAM" \
     -smp 1 \
-    -drive file="$DISK",format=qcow2,if=ide,index=0 \
-    ${CDROM:+$CDROM} \
-    $BOOT \
-    $EXTRA \
+    -drive "file=$DISK,format=qcow2,if=ide,index=0" \
+    "${CDROM[@]}" \
+    "${BOOT[@]}" \
+    "${EXTRA[@]}" \
     -vga cirrus \
     -display none \
     -vnc 127.0.0.1:1 \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0
+
 
