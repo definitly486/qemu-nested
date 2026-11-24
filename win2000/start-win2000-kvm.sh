@@ -57,7 +57,7 @@ start)
         -cpu host \
         -smp "$CPUS" \
         -m "$RAM" \
-        -drive "file=$VM_DISK,format=qcow2,if=ide,index=0" \
+        -drive "file=$VM_DISK,format=raw,if=ide,index=0" \
         -boot order=c \
         -vga std \
         -display none \
