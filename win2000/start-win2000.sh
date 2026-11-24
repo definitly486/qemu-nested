@@ -24,14 +24,14 @@ echo "Процессор   : Pentium III"
 echo "Виртуализация: KVM"
 echo "Видеокарта  : Cirrus"
 echo "Сеть        : RTL8139"
-echo "VNC         : 127.0.0.1:5901"
+echo "VNC         : 0.0.0.0:5901"
 echo "ISO         : НЕ ПОДКЛЮЧЕН"
 echo "======================================"
 
 exec qemu-system-i386 \
     -name "$VM_NAME" \
-    -machine pc,accel=kvm \
-    -enable-kvm \
+    -machine pc \
+    -accel tcg \
     -cpu pentium3 \
     -m "$RAM" \
     -smp 1 \
@@ -39,6 +39,6 @@ exec qemu-system-i386 \
     -boot order=c \
     -vga cirrus \
     -display none \
-    -vnc 0.0.0.0:1 \
+    -vnc 127.0.0.1:1 \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0
