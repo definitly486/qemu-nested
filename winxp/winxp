@@ -1,0 +1,108 @@
+
+#!/bin/bash
+
+VM_NAME="winxp"
+VM_DISK="/$HOME/winxp.img"
+
+RAM="1024"
+CPUS="1"
+
+VNC_PORT="5900"
+
+VM_DIR="$HOME/.local/share/winxp"
+PIDFILE="$VM_DIR/winxp.pid"
+MONITOR="$VM_DIR/winxp-monitor.sock"
+
+QEMU="/usr/bin/qemu-system-x86_64"
+
+case "${1:-start}" in
+
+start)
+    if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+        echo "ERROR: No access to /dev/kvm"
+        echo "Check KVM modules and user group."
+        exit 1
+    fi
+
+    if [ ! -f "$VM_DISK" ]; then
+        echo "Disk not found: $VM_DISK"
+        exit 1
+    fi
+
+    mkdir -p "$VM_DIR" || exit 1
+
+    if [ -s "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "Windows XP already running: PID $PID"
+            exit 1
+        fi
+    fi
+
+    rm -f "$PIDFILE" "$MONITOR"
+
+    "$QEMU" \
+        -name "$VM_NAME" \
+        -machine pc,accel=kvm \
+        -cpu host \
+        -smp "$CPUS" \
+        -m "$RAM" \
+        -drive "file=$VM_DISK,format=raw,if=ide,index=0" \
+        -boot order=c \
+        -vga std \
+        -display none \
+        -vnc "0.0.0.0:0" \
+        -netdev user,id=net0 \
+        -device e1000,netdev=net0 \
+        -usb \
+        -device usb-tablet \
+        -rtc base=localtime \
+        -no-reboot \
+        -daemonize \
+        -pidfile "$PIDFILE" \
+        -monitor "unix:$MONITOR,server=on,wait=off"
+
+    RC=$?
+
+    if [ "$RC" -ne 0 ] || [ ! -s "$PIDFILE" ]; then
+        echo "QEMU/KVM startup failed"
+        exit 1
+    fi
+
+    echo "Windows XP started with KVM"
+    echo "PID: $(cat "$PIDFILE")"
+    echo "VNC: $(hostname -I | awk '{print $1}'):$VNC_PORT"
+    ;;
+
+stop)
+    if [ -S "$MONITOR" ]; then
+        echo "system_powerdown" | nc -U "$MONITOR"
+        echo "Shutdown requested"
+    else
+        echo "VM is not running"
+    fi
+    ;;
+
+kill)
+    if [ -s "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE")
+        kill "$PID" 2>/dev/null
+        rm -f "$PIDFILE" "$MONITOR"
+        echo "VM stopped"
+    fi
+    ;;
+
+status)
+    if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "Windows XP is running"
+        echo "PID: $(cat "$PIDFILE")"
+    else
+        echo "Windows XP is stopped"
+    fi
+    ;;
+
+*)
+    echo "Usage: $0 {start|stop|kill|status}"
+    exit 1
+    ;;
+esac

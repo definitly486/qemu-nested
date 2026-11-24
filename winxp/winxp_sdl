@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# ============================================================
+# WINDOWS XP — QEMU + KVM + SDL/KMSDRM
+# Исправленная версия (звук + modetest прогрев)
+# ============================================================
+
+QEMU="/usr/bin/qemu-system-x86_64"
+DISK="/home/vcore/winxp.img"
+
+# ----------------------------------------------------------
+# ЗВУК
+# После остановки Display Manager PulseAudio/PipeWire умирают.
+# Поэтому используем прямой ALSA.
+# AC97 — лучший эмулируемый звук для Windows XP.
+#
+# Если звука нет / ВМ не грузится — меняй только AUDIO_DEVICE
+# (пробуй сверху вниз):
+#
+#   "default"
+#   "plughw:0,0"
+#   "hw:0,0"
+#   "plughw:CARD=PCH,DEV=0"
+#   "sysdefault"
+#   "plug:dmix"
+#
+# ----------------------------------------------------------
+AUDIO_BACKEND="alsa"
+AUDIO_DEVICE="default"
+
+# Минимальные безопасные опции (меньше шансов, что QEMU упадёт при старте)
+AUDIO_OPTS="out.dev=${AUDIO_DEVICE}"
+
+DRM_DEVICE="/dev/dri/card0"
+VGA_CONNECTOR="/sys/class/drm/card0-VGA-1"
+
+STATE_DIR="/home/vcore/.local/share/winxp"
+PID_FILE="$STATE_DIR/winxp.pid"
+LOG_FILE="$STATE_DIR/winxp.log"
+MONITOR_SOCKET="$STATE_DIR/winxp-monitor.sock"
+
+DISPLAY_MANAGER="display-manager.service"
+
+# Скрипт запускается как системная служба, чтобы остановка MATE не убивала его.
+SERVICE_NAME="winxp.service"
+RUN_USER="vcore"
+SCRIPT_PATH="$(readlink -f "$0")"
+
+# Из modetest:
+CONNECTOR_ID=42
+CRTC_ID=59
+MODE="1920x1080"
+
+QEMU_PID=""
+OLD_VT=""
+DM_WAS_ACTIVE=0
+SESSION_CHANGED=0
+CLEANING=0
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# ============================================================
+# DIAGNOSTICS
+# ============================================================
+
+diagnostics() {
+    log "========== ДИАГНОСТИКА =========="
+    log "QEMU: $($QEMU --version | head -1)"
+    log "Ядро: $(uname -r)"
+    log "Пользователь: $(id)"
+    log "Группы: $(id -nG)"
+    log "DRM: $(ls -l $DRM_DEVICE 2>/dev/null || echo 'нет')"
+    log "VGA статус: $(cat $VGA_CONNECTOR/status 2>/dev/null || echo '?')"
+    log "VGA DPMS: $(cat $VGA_CONNECTOR/dpms 2>/dev/null || echo '?')"
+
+    log "--- Аудио ---"
+    log "ALSA cards:"
+    cat /proc/asound/cards 2>/dev/null | tee -a "$LOG_FILE" || log "  /proc/asound/cards недоступен"
+    log "ALSA устройства:"
+    ls -l /dev/snd/ 2>/dev/null | tee -a "$LOG_FILE" || log "  /dev/snd отсутствует"
+    if command -v aplay >/dev/null 2>&1; then
+        log "aplay -l:"
+        aplay -l 2>&1 | tee -a "$LOG_FILE" || true
+    else
+        log "aplay не найден"
+    fi
+    log "Текущий AUDIO_DEVICE=$AUDIO_DEVICE"
+    log "AUDIO_OPTS=$AUDIO_OPTS"
+
+    log "Пользователи DRM:"
+    sudo fuser -v "$DRM_DEVICE" 2>&1 | tee -a "$LOG_FILE" || true
+    log "========== КОНЕЦ ДИАГНОСТИКИ =========="
+}
+
+# ============================================================
+# SESSION MANAGEMENT
+# ============================================================
+
+save_session() {
+    SESSION_CHANGED=1
+    OLD_VT="$(fgconsole 2>/dev/null || true)"
+
+    # Останавливаем Display Manager
+    if systemctl is-active --quiet "$DISPLAY_MANAGER" 2>/dev/null; then
+        DM_WAS_ACTIVE=1
+        log "Останавливаем Display Manager..."
+        sudo systemctl stop "$DISPLAY_MANAGER"
+    else
+        DM_WAS_ACTIVE=0
+        log "Display Manager уже остановлен."
+    fi
+
+    sleep 1
+
+    # Убиваем графические процессы
+    log "Очистка графических процессов..."
+    sudo pkill -9 Xorg 2>/dev/null || true
+    sudo pkill -9 Xwayland 2>/dev/null || true
+    sudo pkill -9 gnome-shell 2>/dev/null || true
+    sudo pkill -9 mutter 2>/dev/null || true
+    sudo pkill -9 kwin 2>/dev/null || true
+    # Не убиваем pulseaudio/pipewire насильно — пусть сами умрут вместе с сессией
+    sleep 1
+
+    # Отвязываем framebuffer console
+    log "Отвязываем framebuffer console..."
+    for vt in /sys/class/vtconsole/vtcon*; do
+        [[ -e "$vt/bind" ]] && echo 0 | sudo tee "$vt/bind" >/dev/null 2>&1 || true
+    done
+
+    # Переключаемся на VT1
+    log "Переключаемся на VT1..."
+    sudo chvt 1 2>/dev/null || true
+    sleep 1
+
+    # ====================== ПРОГРЕВ DRM ======================
+    log "Прогрев DRM через modetest (короткий)..."
+    if command -v modetest >/dev/null 2>&1; then
+        sudo timeout 1.5 modetest -M nouveau -s ${CONNECTOR_ID}@${CRTC_ID}:${MODE} -d >> "$LOG_FILE" 2>&1 || true
+    else
+        log "ОШИБКА: modetest не найден"
+    fi
+    # =========================================================
+
+    sleep 0.8
+}
+
+restore_session() {
+    [[ "$SESSION_CHANGED" -eq 1 ]] || return 0
+
+    log "Восстановление графической сессии..."
+
+    if [[ "$DM_WAS_ACTIVE" -eq 1 ]]; then
+        log "Запускаем Display Manager..."
+        sudo systemctl start "$DISPLAY_MANAGER" || true
+    fi
+
+    if [[ -n "$OLD_VT" ]] && [[ "$OLD_VT" =~ ^[0-9]+$ ]]; then
+        sleep 2
+        sudo chvt "$OLD_VT" || true
+    fi
+
+    SESSION_CHANGED=0
+}
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+cleanup() {
+    [[ "$CLEANING" -eq 0 ]] || return 0
+    CLEANING=1
+
+    log "Завершение скрипта..."
+
+    if [[ -n "$QEMU_PID" ]] && kill -0 "$QEMU_PID" 2>/dev/null; then
+        log "Останавливаем QEMU..."
+        kill -TERM "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
+    fi
+
+    QEMU_PID=""
+    restore_session
+    rm -f "$MONITOR_SOCKET"
+    log "Скрипт завершён."
+}
+
+trap cleanup EXIT
+trap 'log "Получен сигнал завершения."; exit 130' INT TERM
+
+# ============================================================
+# CHECKS
+# ============================================================
+
+check_environment() {
+    [[ -x "$QEMU" ]] || { log "ОШИБКА: QEMU не найден"; exit 1; }
+    [[ -f "$DISK" ]] || { log "ОШИБКА: Диск не найден: $DISK"; exit 1; }
+    [[ -e "$DRM_DEVICE" ]] || { log "ОШИБКА: DRM не найден"; exit 1; }
+
+    if ! id -nG "$RUN_USER" | tr ' ' '\n' | grep -qx video; then
+        log "ОШИБКА: пользователь $RUN_USER не состоит в группе video"
+        exit 1
+    fi
+
+    # Проверка группы audio — критично для звука
+    if ! id -nG "$RUN_USER" | tr ' ' '\n' | grep -qx audio; then
+        log "ОШИБКА: пользователь $RUN_USER не состоит в группе audio"
+        log "Выполните: sudo usermod -aG audio $RUN_USER"
+        log "После этого обязательно перелогиньтесь или перезагрузитесь."
+        exit 1
+    fi
+
+    command -v setpriv >/dev/null 2>&1 || {
+        log "ОШИБКА: setpriv не найден (пакет util-linux)"
+        exit 1
+    }
+
+    command -v modetest >/dev/null 2>&1 || {
+        log "ОШИБКА: modetest не установлен. Выполните: sudo apt install libdrm-tests"
+        exit 1
+    }
+
+    [[ "$EUID" -eq 0 ]] || {
+        log "ОШИБКА: внутренний процесс должен работать от root через systemd"
+        exit 1
+    }
+}
+
+# ============================================================
+# START VM
+# ============================================================
+
+start_vm() {
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        log "Windows XP уже запускается или работает."
+        return 0
+    fi
+
+    check_launcher_environment
+    log "Передаём запуск системной службе systemd..."
+    sudo -v
+
+    # Системная служба находится вне пользовательской графической сессии.
+    # Поэтому остановка Display Manager не завершит этот скрипт.
+    sudo systemd-run \
+        --system \
+        --unit=winxp \
+        --collect \
+        --property=KillMode=process \
+        --property=TimeoutStopSec=45 \
+        --property=SendSIGKILL=no \
+        --property=WorkingDirectory=/home/vcore \
+        --setenv=HOME=/home/vcore \
+        --setenv=USER=vcore \
+        --setenv=LOGNAME=vcore \
+        "$SCRIPT_PATH" --worker
+
+    log "Служба запуска Windows XP передана systemd."
+    log "Следить за запуском: $SCRIPT_PATH follow"
+}
+
+check_launcher_environment() {
+    [[ -x "$QEMU" ]] || { log "ОШИБКА: QEMU не найден: $QEMU"; exit 1; }
+    [[ -f "$DISK" ]] || { log "ОШИБКА: Диск не найден: $DISK"; exit 1; }
+    [[ -e "$DRM_DEVICE" ]] || { log "ОШИБКА: DRM не найден: $DRM_DEVICE"; exit 1; }
+}
+
+worker_main() {
+    [[ "$EUID" -eq 0 ]] || {
+        echo "Внутренний режим должен запускаться от root." >&2
+        exit 1
+    }
+
+    log "=========================================="
+    log "ЗАПУСК WINDOWS XP (systemd worker)"
+    log "=========================================="
+
+    check_environment
+    diagnostics
+    save_session
+
+    export SDL_VIDEODRIVER="kmsdrm"
+    export SDL_VIDEO_KMSDRM_DEVICE="$DRM_DEVICE"
+    export SDL_VIDEO_DOUBLE_BUFFER="1"
+    export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS="0"
+    unset DISPLAY
+    unset WAYLAND_DISPLAY
+    # Убираем всё, что может пытаться использовать Pulse/PipeWire
+    unset PULSE_SERVER
+    unset PULSE_COOKIE
+    unset PIPEWIRE_RUNTIME_DIR
+    unset XDG_RUNTIME_DIR
+
+    rm -f "$MONITOR_SOCKET" "$PID_FILE"
+
+    log "Запускаем QEMU от пользователя $RUN_USER..."
+    log "Аудио: backend=$AUDIO_BACKEND  opts=$AUDIO_OPTS"
+
+    setpriv \
+        --reuid="$RUN_USER" \
+        --regid="$(id -g "$RUN_USER")" \
+        --init-groups \
+        -- env \
+        HOME="/home/$RUN_USER" \
+        USER="$RUN_USER" \
+        LOGNAME="$RUN_USER" \
+        SDL_VIDEODRIVER="$SDL_VIDEODRIVER" \
+        SDL_VIDEO_KMSDRM_DEVICE="$SDL_VIDEO_KMSDRM_DEVICE" \
+        SDL_VIDEO_DOUBLE_BUFFER="$SDL_VIDEO_DOUBLE_BUFFER" \
+        SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS="$SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS" \
+        "$QEMU" \
+        -name "Windows XP" \
+        -machine pc,hpet=off \
+        -enable-kvm \
+        -cpu host \
+        -smp 1 \
+        -m 1024 \
+        -drive "file=$DISK,format=raw,if=ide,index=0" \
+        -audiodev "${AUDIO_BACKEND},id=audio0,${AUDIO_OPTS}" \
+        -device AC97,audiodev=audio0 \
+        -boot order=c \
+        -vga std \
+        -display sdl,gl=off,full-screen=on \
+        -serial none \
+        -parallel none \
+        -netdev user,id=net0 \
+        -device e1000,netdev=net0 \
+        -usb \
+        -device usb-mouse \
+        -device usb-kbd \
+        -rtc base=localtime \
+        -no-reboot \
+        -pidfile "$PID_FILE" \
+        -monitor "unix:$MONITOR_SOCKET,server=on,wait=off" \
+        >> "$LOG_FILE" 2>&1 &
+
+    QEMU_PID=$!
+    log "QEMU PID: $QEMU_PID"
+
+    sleep 3
+
+    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        log "ОШИБКА: QEMU завершился при запуске."
+        diagnostics
+        wait "$QEMU_PID" || true
+        QEMU_PID=""
+        exit 1
+    fi
+
+    log "QEMU успешно запущен."
+    log "Если звука нет — посмотри в логе ошибки ALSA и выполни: $SCRIPT_PATH diagnose"
+
+    wait "$QEMU_PID" || {
+        local rc=$?
+        log "QEMU завершился с кодом $rc."
+    }
+
+    QEMU_PID=""
+    log "Виртуальная машина остановлена."
+}
+
+# ============================================================
+# STOP / STATUS
+# ============================================================
+
+stop_vm() {
+    if ! sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        log "Служба Windows XP не запущена."
+        return 0
+    fi
+
+    log "Останавливаем Windows XP через systemd..."
+    sudo systemctl stop "$SERVICE_NAME" || true
+    log "Команда остановки службы отправлена."
+}
+
+status_vm() {
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo "Windows XP запущена или подготавливается (systemd: active)."
+        return 0
+    fi
+
+    echo "Windows XP остановлена."
+}
+
+# ============================================================
+# MAIN
+# ============================================================
+
+case "${1:-start}" in
+    --worker) worker_main ;;
+    start)    start_vm ;;
+    stop)     stop_vm ;;
+    restart)  stop_vm; sleep 2; start_vm ;;
+    status)   status_vm ;;
+    log)      tail -n 80 "$LOG_FILE" ;;
+    follow)   tail -f "$LOG_FILE" ;;
+    diagnose) diagnostics ;;
+    *)
+        echo "Использование: $0 {start|stop|restart|status|log|follow|diagnose}"
+        exit 1
+        ;;
+esac
