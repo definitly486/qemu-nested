@@ -1,0 +1,3 @@
+wget https://github.com/definitly486/qemu_vm_image/releases/download/winxp/winxp.qcow2.tar.xz
+tar -xJf winxp.qcow2.tar.xz
+qemu-img convert -f qcow2 -O raw winxp.qcow2 winxp.raw

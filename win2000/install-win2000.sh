@@ -99,7 +99,7 @@ exec qemu-system-i386 \
     "${EXTRA[@]}" \
     -vga cirrus \
     -display none \
-    -vnc 0.0.0.0:1 \
+    -vnc 0.0.0.0:0 \
     -netdev user,id=net0 \
     -device rtl8139,netdev=net0
 
